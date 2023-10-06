@@ -25,6 +25,9 @@ import (
 	"time"
 
 	"github.com/armon/go-radix"
+	"github.com/aws/aws-sdk-go-v2/service/rds"
+	"github.com/aws/aws-sdk-go-v2/service/rds/types"
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/go-logr/logr"
 	_ "github.com/lib/pq"
 	gopassword "github.com/sethvargo/go-password/password"
@@ -750,6 +753,8 @@ loop:
 	}
 	dbClaim.Status.MigrationState = pgctl.S_Completed.String()
 
+	hostnameOfDbBeingMigrated := dbClaim.Status.ActiveDB.ConnectionInfo.Host
+
 	//done with migration- switch active server to newDB
 	dbClaim.Status.ActiveDB = *dbClaim.Status.NewDB.DeepCopy()
 	dbClaim.Status.ActiveDB.DbState = persistancev1.Ready
@@ -766,7 +771,61 @@ loop:
 	//create connection info secret
 	logr.Info("migration complete")
 
+	err = r.updateTagsPostMigrations(ctx, logr, hostnameOfDbBeingMigrated)
+	if err != nil {
+		logr.Error(err, "Could not add operational tag to old db : ")
+		// Need not to return from here.
+	}
+
 	return r.manageSuccess(ctx, dbClaim)
+}
+
+func (r *DatabaseClaimReconciler) updateTagsPostMigrations(ctx context.Context, logr logr.Logger, hostnameOfDbBeingMigrated string) error {
+
+	// splitting hostname as it contains the crossplane dbInstance name
+	dbInstanceName := strings.Split(hostnameOfDbBeingMigrated, ".")[0]
+
+	dbInstance := &crossplanerds.DBInstance{}
+
+	err := r.Client.Get(ctx, client.ObjectKey{
+		Name: dbInstanceName,
+	}, dbInstance)
+
+	if err != nil {
+		if errors.IsNotFound(err) {
+			logr.Info(`Could not find crossplane DBInstances for old db. The old DB could an external resource`)
+			return err
+		}
+		logr.Error(err, "Error getting crossplane dbInstance for old DB")
+		return err
+	}
+
+	logr.Info("ARN of old DB , " + *dbInstance.Status.AtProvider.DBInstanceARN)
+
+	operationalTagKey := "OPERATIONAL_STATUS"
+	operationalValue := "INACTIVE"
+
+	input := rds.AddTagsToResourceInput{
+		ResourceName: aws.String(*dbInstance.Status.AtProvider.DBInstanceARN),
+		Tags: []types.Tag{
+			{
+				Key:   &operationalTagKey,
+				Value: &operationalValue,
+			},
+		},
+	}
+
+	rdsClient, err := dbclient.GetRdsClientfromDefualtConfig()
+	if err != nil {
+		return err
+	}
+	_, err = rdsClient.AddTagsToResource(ctx, &input)
+	if err != nil {
+		logr.Error(err, "Could not update tag for old DB : ")
+		return nil
+	}
+	return nil
+
 }
 
 func (r *DatabaseClaimReconciler) getClientForExistingDB(ctx context.Context, logr logr.Logger,

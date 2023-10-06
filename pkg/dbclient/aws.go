@@ -3,11 +3,13 @@ package dbclient
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/url"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/feature/rds/auth"
+	"github.com/aws/aws-sdk-go-v2/service/rds"
 )
 
 func awsAuthBuilder(ctx context.Context, cliCfg Config) (string, error) {
@@ -37,4 +39,13 @@ func awsAuthBuilderWithConfig(ctx context.Context, cliCfg Config, awsCfg aws.Con
 
 	return parsed.String(), err
 
+}
+
+func GetRdsClientfromDefualtConfig() (*rds.Client, error) {
+	sdkConfig, err := config.LoadDefaultConfig(context.TODO())
+	if err != nil {
+		log.Println("Couldn't load default configuration : ", err)
+		return nil, err
+	}
+	return rds.NewFromConfig(sdkConfig), nil
 }
